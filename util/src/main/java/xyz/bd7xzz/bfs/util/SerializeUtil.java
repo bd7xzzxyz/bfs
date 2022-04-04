@@ -36,4 +36,13 @@ public class SerializeUtil {
     public static byte[] intToByte(int data) {
         return ByteBuffer.allocate(Integer.SIZE / Byte.SIZE).putInt(data).array();
     }
+
+    /**
+     * 字节数组转long
+     * @param bytes 字节数组
+     * @return long
+     */
+    public static long byteToLong(byte[] bytes){
+        return ByteBuffer.allocate(Long.SIZE).put(bytes).getLong();
+    }
 }

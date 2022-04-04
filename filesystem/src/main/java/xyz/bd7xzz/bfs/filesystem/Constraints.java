@@ -5,6 +5,7 @@ public class Constraints {
     public static final int EXCEPTION_CODE_INVALID_PARAM = 400;//无效参数code
     public static final int EXCEPTION_CODE_INTERNAL_ERROR = 500;//服务器内部错误
     public static final String FILE_META_BFS = "._bfs";//bfs
+    public static final String FILE_META_NAME_SPACE= "._namespace";//namespace
     public static final String FILE_META_DELETED = "._deleted";//deleted
 
     public static final String ENV_KEY_FSYNC = "bfs.fs.writer.sync";//环境变量磁盘同步

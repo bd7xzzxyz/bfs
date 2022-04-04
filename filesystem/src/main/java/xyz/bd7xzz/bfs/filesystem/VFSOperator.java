@@ -4,6 +4,12 @@ import xyz.bd7xzz.bfs.filesystem.struct.FileDescriptor;
 import xyz.bd7xzz.bfs.filesystem.struct.FileMode;
 
 public interface VFSOperator {
+
+    /**
+     * 初始化
+     */
+    void init();
+
     /**
      * 创建vfs
      *
@@ -25,7 +31,7 @@ public interface VFSOperator {
      * @param path      vfs相对路径
      * @return 物理路径
      */
-    String getPhysicalPath(String namespace, String path) ;
+    String getPhysicalPath(String namespace, String path);
 
     /**
      * 写入文件（指定写入模式）
@@ -46,23 +52,23 @@ public interface VFSOperator {
      * @param path      写入的vfs路径
      * @return 文件描述符
      */
-    FileDescriptor write(byte[] bytes, String namespace,String path);
+    FileDescriptor write(byte[] bytes, String namespace, String path);
 
     /**
      * 读取文件
      *
-     * @param fd 文件描述符
+     * @param fd        文件描述符
      * @param namespace 命名空间
      * @return 字节流
      */
-    byte[] read(FileDescriptor fd,String namespace);
+    byte[] read(FileDescriptor fd, String namespace);
 
     /**
      * 删除文件
      *
-     * @param fd 文件描述符
+     * @param fd        文件描述符
      * @param namespace 命名空间
      */
-    void delete(FileDescriptor fd,String namespace);
+    void delete(FileDescriptor fd, String namespace);
 
 }

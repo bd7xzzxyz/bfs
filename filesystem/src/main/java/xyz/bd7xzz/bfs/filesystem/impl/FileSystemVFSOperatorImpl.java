@@ -4,9 +4,9 @@ import org.roaringbitmap.longlong.LongBitmapDataProvider;
 import org.roaringbitmap.longlong.Roaring64NavigableMap;
 import xyz.bd7xzz.bfs.common.Cleanable;
 import xyz.bd7xzz.bfs.filesystem.Constraints;
+import xyz.bd7xzz.bfs.filesystem.VFSOperator;
 import xyz.bd7xzz.bfs.filesystem.exception.FileNotFoundException;
 import xyz.bd7xzz.bfs.filesystem.exception.FileSystemException;
-import xyz.bd7xzz.bfs.filesystem.VFSOperator;
 import xyz.bd7xzz.bfs.filesystem.struct.FileBlock;
 import xyz.bd7xzz.bfs.filesystem.struct.FileDescriptor;
 import xyz.bd7xzz.bfs.filesystem.struct.FileMode;
@@ -17,8 +17,8 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
+import java.util.function.Consumer;
 
 import static xyz.bd7xzz.bfs.filesystem.Constraints.*;
 
@@ -27,14 +27,21 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
     private static final LongBitmapDataProvider DELETED_BM = new Roaring64NavigableMap();
 
     @Override
+    public void init() {
+    }
+
+    @Override
     public void mkVFS(String namespace) {
         if (namespace == null || namespace.trim().length() == 0) {
             throw new FileSystemException(EXCEPTION_CODE_INVALID_PARAM, "invalid namespace");
         }
         try {
-            String basePath = buildNamespace(namespace);
-            FileUtil.mkdir(basePath, false);
-            FileUtil.writeFile(basePath + FILE_META_BFS, EMPTY, false, true);
+            String filePath = buildNamespace(namespace);
+            String basePath = getBasePath();
+            FileUtil.mkdir(filePath, false); //创建命名空间
+            FileUtil.writeFile(basePath + FILE_META_BFS, EMPTY, false, true); //根目录写bfs元信息
+            FileUtil.writeFile(filePath + FILE_META_BFS, EMPTY, false, true); //命名空间目录写bfs元信息
+            FileUtil.writeFile(basePath + FILE_META_NAME_SPACE, SerializeUtil.stringToByte(namespace), true, true); //根目录下._namespace记录所有命名空间
         } catch (Exception e) {
             throw new FileSystemException(EXCEPTION_CODE_INTERNAL_ERROR, "make vfs failed");
         }
@@ -115,7 +122,13 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
             throw new FileNotFoundException(fd.getFd());
         }
         try {
-            byte[] bytes = FileUtil.readFile(getPhysicalPath(namespace, FILE_META_DELETED));
+            //再过一下._deleted文件
+            iteratorDeletedFd(namespace, deletedFd -> {
+                DELETED_BM.addLong(deletedFd);//加载到bitmap中
+                if (deletedFd == fd.getFd()) {
+                    throw new FileNotFoundException(fd.getFd());
+                }
+            });
 
             boolean gzipFlag = EnvironmentVariableUtil.getBoolean(ENV_KEY_GZIP, false);//是否启用gzip压缩
             return null;
@@ -143,7 +156,11 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
 
     @Override
     public void cleanup() {
+        while (DELETED_BM.getLongIterator().hasNext()) {
+            long fd = DELETED_BM.getLongIterator().next();
 
+            DELETED_BM.removeLong(fd);
+        }
     }
 
     /**
@@ -189,4 +206,24 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
         return basePath + namespace + File.separator;
     }
 
+
+    /**
+     * 迭代._delete文件，执行业务逻辑
+     *
+     * @param namespace 命名空间
+     * @param consumer  执行业务逻辑
+     * @throws IOException
+     */
+    private void iteratorDeletedFd(String namespace, Consumer<Long> consumer) throws IOException {
+        byte[] bytes = FileUtil.readFile(getPhysicalPath(namespace, FILE_META_DELETED));
+        if (bytes.length == 0) {
+            return;
+        }
+        for (int i = 0; i < bytes.length; i += Long.SIZE) {
+            byte[] tmp = new byte[Long.SIZE];
+            System.arraycopy(bytes, i, tmp, 0, Long.SIZE);
+            long deletedFd = SerializeUtil.byteToLong(tmp);
+            consumer.accept(deletedFd);
+        }
+    }
 }
