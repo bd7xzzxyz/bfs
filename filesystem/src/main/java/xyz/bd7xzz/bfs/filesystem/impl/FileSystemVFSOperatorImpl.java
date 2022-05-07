@@ -14,20 +14,33 @@ import xyz.bd7xzz.bfs.util.*;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 import static xyz.bd7xzz.bfs.filesystem.Constraints.*;
 
+/**
+ * namespace隔离不同命名空间，磁盘中带有._bfs代表bfs的文件系统，._namespace记录了所有命名空间
+ * 若._bfs内容为._delete，则命名空间作废
+ * 命名空间下包含._deleted文件，记录了被删除的文件描述符，真实删除文件由gc调用cleanup方法执行物理删除
+ * 文件描述符结构会记录在每个用户创建的路径中，以._开头+描述符编号的文件中，同时该文件会软连接到命名空间根目录，方便查询
+ * 若文件无法关联到文件描述符结构文件，称为孤儿文件，由gc调用cleanup方法执行物理删除
+ * 孤儿文件的产生可能因为写文件块后，系统异常退出，还没有写文件描述符结构导致，此时认为文件彻底写入失败，客户端可进行重试
+ */
 public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
     private static final byte[] EMPTY = new byte[0];
-    private static final LongBitmapDataProvider DELETED_BM = new Roaring64NavigableMap();
+    private static final LongBitmapDataProvider EMPTY_BM = Roaring64NavigableMap.bitmapOf();
+    private static final Map<String, LongBitmapDataProvider> DELETED_BM = new ConcurrentHashMap<>();
 
     @Override
     public void init() {
+        //TODO 填充bitmap
     }
 
     @Override
@@ -67,7 +80,7 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
     }
 
     @Override
-    public FileDescriptor write(byte[] bytes, FileMode fileMode, String namespace, String path) {
+    public long write(byte[] bytes, FileMode fileMode, String namespace, String path, String fileName) {
         if (null == bytes || bytes.length == 0) {
             throw new FileSystemException(EXCEPTION_CODE_INVALID_PARAM, "invalid bytes");
         }
@@ -79,6 +92,7 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
         }
         try {
             String filePath = this.getPhysicalPath(namespace, path);
+            FileUtil.mkdir(filePath, false);
             FileBlock fileBlock;
             List<FileBlock> blockList = new ArrayList<>(bytes.length / BLOCK_SIZE + 1);
             byte[] buffer = new byte[Constraints.BLOCK_SIZE];
@@ -94,43 +108,52 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
                     buffer[i] = bytes[i];
                 }
             }
-
             long fd = IDUtil.generate();
-            //控制块信息刷盘
-            ByteBuffer byteBuffer = ByteBuffer.allocate(blockList.size() * FileBlock.size());
-            for (FileBlock block : blockList) {
-                byteBuffer.put(block.toByte());
-            }
-            FileUtil.writeFile(filePath + "._" + fd, CompressUtil.compress(byteBuffer.array()), false, true);//控制块强制刷盘
-            return new FileDescriptor(fd, DigestUtil.hex(bytes), blockList);
+            byte[] fileDescBytes = FileDescriptor.newBuilder()
+                    .fd(fd)
+                    .hex(DigestUtil.hex(bytes))
+                    .size(bytes.length)
+                    .fileBlocks(blockList)
+                    .physicalPath(filePath)
+                    .fileName(fileName)
+                    .build().toByte();
+            String fdPath = filePath + "._" + fd;
+            FileUtil.writeFile(fdPath, CompressUtil.compress(fileDescBytes), false, true); //写文件描述符结构
+            Files.createSymbolicLink(FileSystems.getDefault().getPath(buildNamespace(namespace) + "._" + fd),
+                    FileSystems.getDefault().getPath(fdPath)); //记录软链接到namespace下，方便查找
+            return fd;
         } catch (Exception e) {
             throw new FileSystemException(EXCEPTION_CODE_INTERNAL_ERROR, "write file failed!");
         }
     }
 
     @Override
-    public FileDescriptor write(byte[] bytes, String namespace, String path) {
-        return write(bytes, FileMode.CREATE, namespace, path);
+    public long write(byte[] bytes, String namespace, String path, String fileName) {
+        return write(bytes, FileMode.CREATE, namespace, path, fileName);
     }
 
     @Override
-    public byte[] read(FileDescriptor fd, String namespace) {
-        if (null == fd) {
+    public byte[] read(long fd, String namespace) {
+        if (fd <= 0) {
             throw new FileSystemException(Constraints.EXCEPTION_CODE_INVALID_PARAM, "invalid file descriptor");
         }
-        if (DELETED_BM.contains(fd.getFd())) {
-            throw new FileNotFoundException(fd.getFd());
+        LongBitmapDataProvider deletedBM = DELETED_BM.getOrDefault(namespace, EMPTY_BM);
+        if (deletedBM.contains(fd)) {
+            throw new FileNotFoundException(fd);
         }
         try {
             //再过一下._deleted文件
             iteratorDeletedFd(namespace, deletedFd -> {
-                DELETED_BM.addLong(deletedFd);//加载到bitmap中
-                if (deletedFd == fd.getFd()) {
-                    throw new FileNotFoundException(fd.getFd());
+                deletedBM.addLong(deletedFd);//加载到bitmap中
+                if (deletedFd == fd) {
+                    throw new FileNotFoundException(fd);
                 }
             });
 
+            //从文件描述符信息中取控制块，根据控制块逐一读取文件流
+
             boolean gzipFlag = EnvironmentVariableUtil.getBoolean(ENV_KEY_GZIP, false);//是否启用gzip压缩
+
             return null;
         } catch (Exception e) {
             throw new FileSystemException(EXCEPTION_CODE_INTERNAL_ERROR, "read file failed!");
@@ -138,29 +161,37 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
     }
 
     @Override
-    public void delete(FileDescriptor fd, String namespace) {
-        if (null == fd) {
+    public void delete(long fd, String namespace) {
+        if (fd <= 0) {
             throw new FileSystemException(Constraints.EXCEPTION_CODE_INVALID_PARAM, "invalid file descriptor");
         }
         try {
-            FileUtil.writeFile(getPhysicalPath(namespace, FILE_META_DELETED), SerializeUtil.longToByte(fd.getFd()), true, true);
+            FileUtil.writeFile(getPhysicalPath(namespace, FILE_META_DELETED), SerializeUtil.longToByte(fd), true, true);
         } catch (Exception e) {
             throw new FileSystemException(EXCEPTION_CODE_INTERNAL_ERROR, "delete file failed!");
         }
         try {
-            DELETED_BM.addLong(fd.getFd());
+            DELETED_BM.get(namespace).addLong(fd);
         } catch (Exception e) {
-
+            //TODO 记录日志
         }
     }
 
     @Override
     public void cleanup() {
-        while (DELETED_BM.getLongIterator().hasNext()) {
-            long fd = DELETED_BM.getLongIterator().next();
 
-            DELETED_BM.removeLong(fd);
-        }
+    }
+
+    /**
+     * 获取文件描述符结构
+     *
+     * @param fd
+     * @return
+     */
+    private FileDescriptor getFileDescriptor(long fd, String namespace) throws IOException {
+        String path = buildNamespace(namespace);
+        byte[] bytes = CompressUtil.unCompress(FileUtil.readFile(path + "._" + fd));
+        return FileDescriptor.parseByte(bytes);
     }
 
     /**
@@ -219,11 +250,12 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
         if (bytes.length == 0) {
             return;
         }
-        for (int i = 0; i < bytes.length; i += Long.SIZE) {
-            byte[] tmp = new byte[Long.SIZE];
-            System.arraycopy(bytes, i, tmp, 0, Long.SIZE);
+        for (int i = 0; i < bytes.length; i += 8) {
+            byte[] tmp = new byte[8];
+            System.arraycopy(bytes, i, tmp, 0, 8);
             long deletedFd = SerializeUtil.byteToLong(tmp);
             consumer.accept(deletedFd);
         }
     }
+
 }

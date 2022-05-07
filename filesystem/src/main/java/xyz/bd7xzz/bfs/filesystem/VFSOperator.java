@@ -1,6 +1,5 @@
 package xyz.bd7xzz.bfs.filesystem;
 
-import xyz.bd7xzz.bfs.filesystem.struct.FileDescriptor;
 import xyz.bd7xzz.bfs.filesystem.struct.FileMode;
 
 public interface VFSOperator {
@@ -40,9 +39,10 @@ public interface VFSOperator {
      * @param fileMode  写入模式
      * @param namespace 命名空间
      * @param path      写入的vfs路径
+     * @param fileName  原始文件名
      * @return 文件描述符
      */
-    FileDescriptor write(byte[] bytes, FileMode fileMode, String namespace, String path);
+    long write(byte[] bytes, FileMode fileMode, String namespace, String path, String fileName);
 
     /**
      * 写入文件（创建新文件）
@@ -50,9 +50,10 @@ public interface VFSOperator {
      * @param bytes     字节流
      * @param namespace 命名空间
      * @param path      写入的vfs路径
+     * @param fileName  原始文件名
      * @return 文件描述符
      */
-    FileDescriptor write(byte[] bytes, String namespace, String path);
+    long write(byte[] bytes, String namespace, String path, String fileName);
 
     /**
      * 读取文件
@@ -61,7 +62,7 @@ public interface VFSOperator {
      * @param namespace 命名空间
      * @return 字节流
      */
-    byte[] read(FileDescriptor fd, String namespace);
+    byte[] read(long fd, String namespace);
 
     /**
      * 删除文件
@@ -69,6 +70,6 @@ public interface VFSOperator {
      * @param fd        文件描述符
      * @param namespace 命名空间
      */
-    void delete(FileDescriptor fd, String namespace);
+    void delete(long fd, String namespace);
 
 }

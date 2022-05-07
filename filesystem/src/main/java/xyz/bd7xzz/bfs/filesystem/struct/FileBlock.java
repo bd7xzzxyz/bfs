@@ -56,6 +56,6 @@ public class FileBlock {
      * @return 长度
      */
     public static int size() {
-        return Long.SIZE / Byte.SIZE * 2 + 32;
+        return 8  * 2 + 32;
     }
 }
