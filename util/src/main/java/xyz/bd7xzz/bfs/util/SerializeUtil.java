@@ -35,6 +35,19 @@ public class SerializeUtil {
     }
 
     /**
+     * 字节数组转string
+     *
+     * @param bytes 字节数组
+     * @return 原始数据
+     */
+    public static String byteToString(byte[] bytes) {
+        if (null == bytes || bytes.length == 0) {
+            return EMPTY;
+        }
+        return new String(bytes, StandardCharsets.UTF_8);
+    }
+
+    /**
      * int转字节数组
      *
      * @param data 原始数据

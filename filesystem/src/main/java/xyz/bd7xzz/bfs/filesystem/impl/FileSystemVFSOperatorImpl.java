@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import static xyz.bd7xzz.bfs.filesystem.Constraints.*;
@@ -39,10 +40,26 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
     private static final byte[] EMPTY = new byte[0];
     private static final LongBitmapDataProvider EMPTY_BM = Roaring64NavigableMap.bitmapOf();
     private static final Map<String, LongBitmapDataProvider> DELETED_BM = new ConcurrentHashMap<>();
+    private static final AtomicBoolean INIT_FLAT = new AtomicBoolean(false);
 
     @Override
     public void init() {
-        //TODO 填充bitmap
+        try {
+            if (INIT_FLAT.compareAndSet(false, true)) {
+                byte[] data = FileUtil.readFile(getBasePath() + FILE_META_NAME_SPACE); //初始化每个命名空间的bitmap
+                String dataStr = SerializeUtil.byteToString(data).trim();
+                if (dataStr.length() > 0) {
+                    String[] namespaces = dataStr.split("\n");
+                    for (String namespace : namespaces) {
+                        DELETED_BM.put(namespace, new Roaring64NavigableMap());
+                        iteratorDeletedFd(namespace, fd -> DELETED_BM.get(namespace).addLong(fd));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            //TODO 记录日志
+            System.exit(-1);
+        }
     }
 
     @Override
@@ -56,7 +73,8 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
             FileUtil.mkdir(filePath, false); //创建命名空间
             FileUtil.writeFile(basePath + FILE_META_BFS, EMPTY, false, true); //根目录写bfs元信息
             FileUtil.writeFile(filePath + FILE_META_BFS, EMPTY, false, true); //命名空间目录写bfs元信息
-            FileUtil.writeFile(basePath + FILE_META_NAME_SPACE, SerializeUtil.stringToByte(namespace), true, true); //根目录下._namespace记录所有命名空间
+            FileUtil.writeFile(basePath + FILE_META_NAME_SPACE, SerializeUtil.stringToByte(namespace + "\n"), true, true); //根目录下._namespace记录所有命名空间
+            DELETED_BM.put(namespace, new Roaring64NavigableMap());//初始化bitmap
         } catch (Exception e) {
             throw new FileSystemException(EXCEPTION_CODE_INTERNAL_ERROR, "make vfs failed");
         }
@@ -202,7 +220,7 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
 
     @Override
     public void cleanup() {
-
+        //TODO
     }
 
     /**
