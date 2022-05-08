@@ -60,9 +60,10 @@ public interface VFSOperator {
      *
      * @param fd        文件描述符
      * @param namespace 命名空间
+     * @param checkSum  是否校验checksum，若校验，失败会抛出FileCorruptedException
      * @return 字节流
      */
-    byte[] read(long fd, String namespace);
+    byte[] read(long fd, String namespace, boolean checkSum);
 
     /**
      * 删除文件

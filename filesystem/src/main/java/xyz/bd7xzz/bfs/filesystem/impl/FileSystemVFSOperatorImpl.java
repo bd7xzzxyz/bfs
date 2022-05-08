@@ -5,6 +5,7 @@ import org.roaringbitmap.longlong.Roaring64NavigableMap;
 import xyz.bd7xzz.bfs.common.Cleanable;
 import xyz.bd7xzz.bfs.filesystem.Constraints;
 import xyz.bd7xzz.bfs.filesystem.VFSOperator;
+import xyz.bd7xzz.bfs.filesystem.exception.FileCorruptedException;
 import xyz.bd7xzz.bfs.filesystem.exception.FileNotFoundException;
 import xyz.bd7xzz.bfs.filesystem.exception.FileSystemException;
 import xyz.bd7xzz.bfs.filesystem.struct.FileBlock;
@@ -14,6 +15,7 @@ import xyz.bd7xzz.bfs.util.*;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
@@ -100,7 +102,7 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
             boolean gzipFlag = EnvironmentVariableUtil.getBoolean(ENV_KEY_GZIP, false);//是否启用gzip压缩
             for (int i = 0; i < bytes.length; i++) { //文件分块写入磁盘
                 if (i % Constraints.BLOCK_SIZE == 0) {
-                    fileBlock = new FileBlock(IDUtil.generate(), DigestUtil.hex(buffer), buffer.length); //控制块信息
+                    fileBlock = new FileBlock(IDUtil.generate(), DigestUtil.hex(buffer)); //控制块信息
                     FileUtil.writeFile(filePath + fileBlock.getFd(), gzipFlag ? CompressUtil.compress(buffer) : buffer, fileMode == FileMode.APPEND, syncFlag);
                     blockList.add(fileBlock);
                     buffer = new byte[Constraints.BLOCK_SIZE];
@@ -109,16 +111,16 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
                 }
             }
             long fd = IDUtil.generate();
-            byte[] fileDescBytes = FileDescriptor.newBuilder()
-                    .fd(fd)
-                    .hex(DigestUtil.hex(bytes))
-                    .size(bytes.length)
-                    .fileBlocks(blockList)
-                    .physicalPath(filePath)
-                    .fileName(fileName)
-                    .build().toByte();
+            FileDescriptor fileDescriptor = new FileDescriptor();
+            fileDescriptor.setFd(fd);
+            fileDescriptor.setHex(DigestUtil.hex(bytes));
+            fileDescriptor.setSize(bytes.length);
+            fileDescriptor.setFileBlocks(blockList);
+            fileDescriptor.setPhysicalPath(filePath);
+            fileDescriptor.setFileName(fileName);
+            fileDescriptor.setCreateTime(System.currentTimeMillis());
             String fdPath = filePath + "._" + fd;
-            FileUtil.writeFile(fdPath, CompressUtil.compress(fileDescBytes), false, true); //写文件描述符结构
+            FileUtil.writeFile(fdPath, CompressUtil.compress(SerializeUtil.objectToByte(fileDescriptor)), false, true); //写文件描述符结构
             Files.createSymbolicLink(FileSystems.getDefault().getPath(buildNamespace(namespace) + "._" + fd),
                     FileSystems.getDefault().getPath(fdPath)); //记录软链接到namespace下，方便查找
             return fd;
@@ -133,7 +135,7 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
     }
 
     @Override
-    public byte[] read(long fd, String namespace) {
+    public byte[] read(long fd, String namespace, boolean checkSum) {
         if (fd <= 0) {
             throw new FileSystemException(Constraints.EXCEPTION_CODE_INVALID_PARAM, "invalid file descriptor");
         }
@@ -151,10 +153,31 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
             });
 
             //从文件描述符信息中取控制块，根据控制块逐一读取文件流
-
+            FileDescriptor fileDescriptor = getFileDescriptor(fd, namespace);
+            if (null == fileDescriptor) {
+                throw new FileNotFoundException(fd);
+            }
+            String filePath = fileDescriptor.getPhysicalPath();
             boolean gzipFlag = EnvironmentVariableUtil.getBoolean(ENV_KEY_GZIP, false);//是否启用gzip压缩
-
-            return null;
+            ByteBuffer byteBuffer = ByteBuffer.allocate(Long.valueOf(fileDescriptor.getSize()).intValue());
+            for (FileBlock fileBlock : fileDescriptor.getFileBlocks()) {
+                byte[] blockBytes = FileUtil.readFile(filePath + fileBlock.getFd());
+                blockBytes = gzipFlag ? CompressUtil.unCompress(blockBytes) : blockBytes;
+                if (checkSum) {
+                    byte[] hex = DigestUtil.hex(blockBytes);
+                    if (!DigestUtil.hexEquals(hex, fileBlock.getHex())) { //校验每一个块是否正确
+                        throw new FileCorruptedException(fd, fileBlock.getFd());
+                    }
+                }
+                byteBuffer.put(blockBytes);
+            }
+            byte[] data = byteBuffer.array();
+            if (checkSum) {
+                if (!DigestUtil.hexEquals(fileDescriptor.getHex(), DigestUtil.hex(data))) { //校验最终文件是否正确
+                    throw new FileCorruptedException(fd, fd);
+                }
+            }
+            return data;
         } catch (Exception e) {
             throw new FileSystemException(EXCEPTION_CODE_INTERNAL_ERROR, "read file failed!");
         }
@@ -191,7 +214,7 @@ public class FileSystemVFSOperatorImpl implements VFSOperator, Cleanable {
     private FileDescriptor getFileDescriptor(long fd, String namespace) throws IOException {
         String path = buildNamespace(namespace);
         byte[] bytes = CompressUtil.unCompress(FileUtil.readFile(path + "._" + fd));
-        return FileDescriptor.parseByte(bytes);
+        return SerializeUtil.byteToObject(FileDescriptor.class, bytes);
     }
 
     /**

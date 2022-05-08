@@ -1,6 +1,6 @@
 package xyz.bd7xzz.bfs.filesystem.exception;
 
-public class FileSystemException extends RuntimeException{
+public class FileSystemException extends RuntimeException {
     private String message;
     private int code;
 
